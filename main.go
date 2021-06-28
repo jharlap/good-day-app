@@ -26,6 +26,10 @@ var (
 func main() {
 	signingSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	sapi = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
+	port := os.Getenv("PORT")
+	if len(port) == 0 {
+		port = ":3000"
+	}
 
 	{
 		dsn := os.Getenv("DATABASE_DSN")
@@ -43,7 +47,8 @@ func main() {
 	http.HandleFunc("/", printBody)
 	http.Handle("/event", verifySecret(http.HandlerFunc(handleEvent)))
 	http.Handle("/interactive", verifySecret(http.HandlerFunc(handleInteractive)))
-	http.ListenAndServe(":3000", nil)
+	http.Handle("/slash", verifySecret(http.HandlerFunc(handleSlash)))
+	http.ListenAndServe(port, nil)
 }
 
 func verifySecret(next http.HandlerFunc) http.Handler {
@@ -74,6 +79,31 @@ func verifySecret(next http.HandlerFunc) http.Handler {
 	})
 }
 
+func handleSlash(w http.ResponseWriter, r *http.Request) {
+	s, err := slack.SlashCommandParse(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	switch s.Command {
+	case "/reflect":
+		params := &slack.Msg{Text: "Yay! Reflection time!"}
+		b, err := json.Marshal(params)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
+
+		go startReflectionDialog(s.TriggerID)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+}
+
 func handleInteractive(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	if err != nil {
@@ -94,17 +124,14 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 	if ic.Type == slack.InteractionTypeBlockActions && len(ic.ActionCallback.BlockActions) > 0 && ic.ActionCallback.BlockActions[0].ActionID == homeButtonStartReflection {
 		startReflectionDialog(ic.TriggerID)
 	} else if ic.Type == slack.InteractionTypeViewSubmission && ic.View.CallbackID == reflectionModalCallbackID {
-		fmt.Printf("Modal Submission: %+v\n", ic)
-		var errs []string
-		for k, v := range ic.View.State.Values {
-			for ik := range v {
-				val := ic.View.State.Values[k][ik].SelectedOption.Value
-				if len(val) == 0 {
-					errs = append(errs, k)
+		/*
+			for k, v := range ic.View.State.Values {
+				for ik := range v {
+					val := ic.View.State.Values[k][ik].SelectedOption.Value
+					fmt.Println("k:", k, "ik:", ik, "iv.Value:", val)
 				}
-				fmt.Println("k:", k, "ik:", ik, "iv.Value:", val)
 			}
-		}
+		*/
 
 		r := Reflection{
 			TeamID:                ic.Team.ID,
@@ -124,12 +151,11 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 			MostProductiveTime:    NumberPrefixedEnum(ic.View.State.Values["most_productive_time"]["time-select"].SelectedOption.Value),
 			LeastProductiveTime:   NumberPrefixedEnum(ic.View.State.Values["least_productive_time"]["time-select"].SelectedOption.Value),
 		}
-		fmt.Println(r)
 		err := saveReflection(r)
 		if err != nil {
 			log.Error().Err(err).Msg("error saving reflection")
 		}
-	} else {
+		//} else {
 		//log.Info().Str("body", string(body)).Msg("unexpected interaction")
 	}
 }
@@ -326,12 +352,9 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 			Type:   slack.VTHomeTab,
 			Blocks: bb,
 		}
-		r, err := sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
+		_, err = sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
 		if err != nil {
 			log.Debug().Err(err).Str("user", ev.User).Msg("error publishing home view")
-		} else {
-			fmt.Println("published!")
-			fmt.Printf("%+v\n", r)
 		}
 
 	default:
