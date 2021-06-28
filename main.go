@@ -47,6 +47,7 @@ func main() {
 	http.HandleFunc("/", printBody)
 	http.Handle("/event", verifySecret(http.HandlerFunc(handleEvent)))
 	http.Handle("/interactive", verifySecret(http.HandlerFunc(handleInteractive)))
+	http.Handle("/slash", verifySecret(http.HandlerFunc(handleSlash)))
 	http.ListenAndServe(port, nil)
 }
 
@@ -76,6 +77,31 @@ func verifySecret(next http.HandlerFunc) http.Handler {
 		r.Body = ioutil.NopCloser(bytes.NewBuffer(body))
 		next.ServeHTTP(w, r)
 	})
+}
+
+func handleSlash(w http.ResponseWriter, r *http.Request) {
+	s, err := slack.SlashCommandParse(r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	switch s.Command {
+	case "/reflect":
+		params := &slack.Msg{Text: "Yay! Reflection time!"}
+		b, err := json.Marshal(params)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
+
+		go startReflectionDialog(s.TriggerID)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 }
 
 func handleInteractive(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +352,7 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 			Type:   slack.VTHomeTab,
 			Blocks: bb,
 		}
-		_, err := sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
+		_, err = sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
 		if err != nil {
 			log.Debug().Err(err).Str("user", ev.User).Msg("error publishing home view")
 		}
