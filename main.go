@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -10,20 +11,34 @@ import (
 	"os"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/rs/zerolog/log"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
-	"github.com/zeebo/xxh3"
 )
 
 var (
 	sapi          *slack.Client
 	signingSecret string
+	db            *sql.DB
 )
 
 func main() {
 	signingSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	sapi = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
+
+	{
+		dsn := os.Getenv("DATABASE_DSN")
+		fmt.Println("connecting to db with dsn:", dsn)
+		c, err := sql.Open("mysql", dsn)
+		if err != nil {
+			log.Fatal().Err(err).Msg("error connecting to database")
+		}
+		db = c
+		db.SetConnMaxLifetime(time.Minute * 3)
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(10)
+	}
 
 	http.HandleFunc("/", printBody)
 	http.Handle("/event", verifySecret(http.HandlerFunc(handleEvent)))
@@ -80,11 +95,52 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 		startReflectionDialog(ic.TriggerID)
 	} else if ic.Type == slack.InteractionTypeViewSubmission && ic.View.CallbackID == reflectionModalCallbackID {
 		fmt.Printf("Modal Submission: %+v\n", ic)
-		fmt.Println("first:", ic.View.State.Values["first-name-block"]["first-name-input"].Value)
-		fmt.Println("last:", ic.View.State.Values["last-name-block"]["last-name-input"].Value)
+		var errs []string
+		for k, v := range ic.View.State.Values {
+			for ik := range v {
+				val := ic.View.State.Values[k][ik].SelectedOption.Value
+				if len(val) == 0 {
+					errs = append(errs, k)
+				}
+				fmt.Println("k:", k, "ik:", ik, "iv.Value:", val)
+			}
+		}
+
+		r := Reflection{
+			TeamID:                ic.Team.ID,
+			UserID:                ic.User.ID,
+			Date:                  time.Now().Format("2006-01-02 15:04:05"),
+			WorkDayQuality:        NumberPrefixedEnum(ic.View.State.Values["work_day_quality"]["quality-select"].SelectedOption.Value),
+			WorkOtherPeopleAmount: NumberPrefixedEnum(ic.View.State.Values["work_other_people_amount"]["amount-select"].SelectedOption.Value),
+			HelpOtherPeopleAmount: NumberPrefixedEnum(ic.View.State.Values["help_other_people_amount"]["amount-select"].SelectedOption.Value),
+			InterruptedAmount:     NumberPrefixedEnum(ic.View.State.Values["interrupted_amount"]["amount-select"].SelectedOption.Value),
+			ProgressGoalsAmount:   NumberPrefixedEnum(ic.View.State.Values["progress_goals_amount"]["amount-select"].SelectedOption.Value),
+			QualityWorkAmount:     NumberPrefixedEnum(ic.View.State.Values["quality_work_amount"]["amount-select"].SelectedOption.Value),
+			LotOfWorkAmount:       NumberPrefixedEnum(ic.View.State.Values["lot_of_work_amount"]["amount-select"].SelectedOption.Value),
+			WorkDayFeeling:        NumberPrefixedEnum(ic.View.State.Values["work_day_feeling"]["feeling-select"].SelectedOption.Value),
+			StressfulAmount:       NumberPrefixedEnum(ic.View.State.Values["stressful_amount"]["amount-select"].SelectedOption.Value),
+			BreaksAmount:          NumberPrefixedEnum(ic.View.State.Values["breaks_amount"]["amount-select"].SelectedOption.Value),
+			MeetingNumber:         NumberPrefixedEnum(ic.View.State.Values["meeting_number"]["number-select"].SelectedOption.Value),
+			MostProductiveTime:    NumberPrefixedEnum(ic.View.State.Values["most_productive_time"]["time-select"].SelectedOption.Value),
+			LeastProductiveTime:   NumberPrefixedEnum(ic.View.State.Values["least_productive_time"]["time-select"].SelectedOption.Value),
+		}
+		fmt.Println(r)
+		err := saveReflection(r)
+		if err != nil {
+			log.Error().Err(err).Msg("error saving reflection")
+		}
 	} else {
-		log.Info().Str("body", string(body)).Msg("unexpected interaction")
+		//log.Info().Str("body", string(body)).Msg("unexpected interaction")
 	}
+}
+
+func saveReflection(r Reflection) error {
+	_, err := db.Exec("INSERT INTO reflections SET team_id=?, user_id=?, date=?, work_day_quality=?, work_other_people_amount=?, help_other_people_amount=?, interrupted_amount=?, progress_goals_amount=?, quality_work_amount=?, lot_of_work_amount=?, work_day_feeling=?, stressful_amount=?, breaks_amount=?, meeting_number=?, most_productive_time=?, least_productive_time=?", r.TeamID, r.UserID, r.Date, r.WorkDayQuality, r.WorkOtherPeopleAmount, r.HelpOtherPeopleAmount, r.InterruptedAmount, r.ProgressGoalsAmount, r.QualityWorkAmount, r.LotOfWorkAmount, r.WorkDayFeeling, r.StressfulAmount, r.BreaksAmount, r.MeetingNumber, r.MostProductiveTime, r.LeastProductiveTime)
+	if err != nil {
+		return fmt.Errorf("error saving reflection: %w", err)
+	}
+
+	return nil
 }
 
 func generateReflectionModal() slack.ModalViewRequest {
@@ -105,7 +161,7 @@ func generateReflectionModal() slack.ModalViewRequest {
 		awe := slack.NewOptionBlockObject("4-awesome", slack.NewTextBlockObject(slack.PlainTextType, "Awesome", false, false), nil)
 
 		placeholder := slack.NewTextBlockObject(slack.PlainTextType, "Pick the closest", false, false)
-		qualitySelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "", ter, bad, ok, good, awe)
+		qualitySelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "quality-select", ter, bad, ok, good, awe)
 	}
 
 	var amountOfDaySelect *slack.SelectBlockElement
@@ -117,7 +173,7 @@ func generateReflectionModal() slack.ModalViewRequest {
 		most := slack.NewOptionBlockObject("4-most", slack.NewTextBlockObject(slack.PlainTextType, "Most or all of the day", false, false), nil)
 
 		placeholder := slack.NewTextBlockObject(slack.PlainTextType, "How much of the day", false, false)
-		amountOfDaySelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "", none, little, some, much, most)
+		amountOfDaySelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "amount-select", none, little, some, much, most)
 	}
 
 	var feelingSelect *slack.SelectBlockElement
@@ -132,7 +188,7 @@ func generateReflectionModal() slack.ModalViewRequest {
 		excited := slack.NewOptionBlockObject("7-excited", slack.NewTextBlockObject(slack.PlainTextType, "Excited or alert", false, false), nil)
 
 		placeholder := slack.NewTextBlockObject(slack.PlainTextType, "Pick the closest", false, false)
-		feelingSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "", tense, stress, sad, bored, calm, serene, happy, excited)
+		feelingSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "feeling-select", tense, stress, sad, bored, calm, serene, happy, excited)
 	}
 
 	var numberSelect *slack.SelectBlockElement
@@ -144,7 +200,7 @@ func generateReflectionModal() slack.ModalViewRequest {
 		many := slack.NewOptionBlockObject("4-many", slack.NewTextBlockObject(slack.PlainTextType, "5 or more", false, false), nil)
 
 		placeholder := slack.NewTextBlockObject(slack.PlainTextType, "How many", false, false)
-		numberSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "", none, one, two, few, many)
+		numberSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "number-select", none, one, two, few, many)
 	}
 	var timeSelect *slack.SelectBlockElement
 	{
@@ -156,48 +212,48 @@ func generateReflectionModal() slack.ModalViewRequest {
 		equally := slack.NewOptionBlockObject("5-equally", slack.NewTextBlockObject(slack.PlainTextType, "Equally throughout the day", false, false), nil)
 
 		placeholder := slack.NewTextBlockObject(slack.PlainTextType, "Which part of the day", false, false)
-		timeSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "", morning, midday, earlyAft, lateAft, nonwork, equally)
+		timeSelect = slack.NewOptionsSelectBlockElement("static_select", placeholder, "time-select", morning, midday, earlyAft, lateAft, nonwork, equally)
 	}
 
 	// Questions
 	q1Text := slack.NewTextBlockObject(slack.PlainTextType, "How was your work day?", false, false)
-	q1 := slack.NewSectionBlock(q1Text, nil, slack.NewAccessory(qualitySelect))
+	q1 := slack.NewInputBlock("work_day_quality", q1Text, qualitySelect)
 
 	q2Text := slack.NewTextBlockObject(slack.PlainTextType, "I worked with other people", false, false)
-	q2 := slack.NewSectionBlock(q2Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q2 := slack.NewInputBlock("work_other_people_amount", q2Text, amountOfDaySelect)
 
 	q3Text := slack.NewTextBlockObject(slack.PlainTextType, "I helped other people", false, false)
-	q3 := slack.NewSectionBlock(q3Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q3 := slack.NewInputBlock("help_other_people_amount", q3Text, amountOfDaySelect)
 
 	q4Text := slack.NewTextBlockObject(slack.PlainTextType, "My work was interrupted", false, false)
-	q4 := slack.NewSectionBlock(q4Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q4 := slack.NewInputBlock("interrupted_amount", q4Text, amountOfDaySelect)
 
 	q5Text := slack.NewTextBlockObject(slack.PlainTextType, "I made progress toward my goals", false, false)
-	q5 := slack.NewSectionBlock(q5Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q5 := slack.NewInputBlock("progress_goals_amount", q5Text, amountOfDaySelect)
 
 	q6Text := slack.NewTextBlockObject(slack.PlainTextType, "I did high-quality work", false, false)
-	q6 := slack.NewSectionBlock(q6Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q6 := slack.NewInputBlock("quality_work_amount", q6Text, amountOfDaySelect)
 
 	q7Text := slack.NewTextBlockObject(slack.PlainTextType, "I did a lot of work", false, false)
-	q7 := slack.NewSectionBlock(q7Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q7 := slack.NewInputBlock("lot_of_work_amount", q7Text, amountOfDaySelect)
 
 	q8Text := slack.NewTextBlockObject(slack.PlainTextType, "Which best describes how you feel about your work day?", false, false)
-	q8 := slack.NewSectionBlock(q8Text, nil, slack.NewAccessory(feelingSelect))
+	q8 := slack.NewInputBlock("work_day_feeling", q8Text, feelingSelect)
 
 	q9Text := slack.NewTextBlockObject(slack.PlainTextType, "My day was stressful", false, false)
-	q9 := slack.NewSectionBlock(q9Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q9 := slack.NewInputBlock("stressful_amount", q9Text, amountOfDaySelect)
 
 	q10Text := slack.NewTextBlockObject(slack.PlainTextType, "I took breaks today", false, false)
-	q10 := slack.NewSectionBlock(q10Text, nil, slack.NewAccessory(amountOfDaySelect))
+	q10 := slack.NewInputBlock("breaks_amount", q10Text, amountOfDaySelect)
 
 	q11Text := slack.NewTextBlockObject(slack.PlainTextType, "How many meetings did you have today?", false, false)
-	q11 := slack.NewSectionBlock(q11Text, nil, slack.NewAccessory(numberSelect))
+	q11 := slack.NewInputBlock("meeting_number", q11Text, numberSelect)
 
 	q12Text := slack.NewTextBlockObject(slack.PlainTextType, "Today, I felt most productive:", false, false)
-	q12 := slack.NewSectionBlock(q12Text, nil, slack.NewAccessory(timeSelect))
+	q12 := slack.NewInputBlock("most_productive_time", q12Text, timeSelect)
 
 	q13Text := slack.NewTextBlockObject(slack.PlainTextType, "Today, I felt least productive:", false, false)
-	q13 := slack.NewSectionBlock(q13Text, nil, slack.NewAccessory(timeSelect))
+	q13 := slack.NewInputBlock("least_productive_time", q13Text, timeSelect)
 
 	blocks := slack.Blocks{
 		BlockSet: []slack.Block{
@@ -290,10 +346,6 @@ func renderHomeView(ctx context.Context, uid string) (slack.Blocks, error) {
 	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock("home-start-reflection-action-block", slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false))))
 
 	return bb, nil
-}
-
-func viewHash(uid string) string {
-	return fmt.Sprintf("%x", xxh3.HashString(fmt.Sprintf("%d:%s", time.Now().UnixNano(), uid)))
 }
 
 func printBody(w http.ResponseWriter, r *http.Request) {
