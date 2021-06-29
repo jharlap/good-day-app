@@ -367,7 +367,12 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 func renderHomeView(ctx context.Context, uid string) (slack.Blocks, error) {
 	var bb slack.Blocks
 
-	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello %s!", uid), false, false)}, nil))
+	u, err := sapi.GetUserInfo(uid)
+	if err != nil {
+		return bb, fmt.Errorf("error getting user info for uid %s: %w", uid, err)
+	}
+
+	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello %s!", u.Name), false, false)}, nil))
 	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock("home-start-reflection-action-block", slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false))))
 
 	return bb, nil
