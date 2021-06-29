@@ -27,7 +27,9 @@ func main() {
 	signingSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	sapi = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
 	port := os.Getenv("PORT")
-	if len(port) == 0 {
+	if len(port) > 0 {
+		port = fmt.Sprintf(":%s", port)
+	} else {
 		port = ":3000"
 	}
 
