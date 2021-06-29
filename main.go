@@ -354,9 +354,9 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 			Type:   slack.VTHomeTab,
 			Blocks: bb,
 		}
-		_, err = sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
+		r, err := sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
 		if err != nil {
-			log.Debug().Err(err).Str("user", ev.User).Msg("error publishing home view")
+			log.Debug().Err(err).Str("user", ev.User).Msgf("error publishing home view: %+v", r.ResponseMetadata.Messages)
 		}
 
 	default:
@@ -367,15 +367,38 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 func renderHomeView(ctx context.Context, uid string) (slack.Blocks, error) {
 	var bb slack.Blocks
 
-	u, err := sapi.GetUserInfo(uid)
+	u, err := sapi.GetUserInfoContext(ctx, uid)
 	if err != nil {
 		return bb, fmt.Errorf("error getting user info for uid %s: %w", uid, err)
 	}
 
-	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello %s!", u.Name), false, false)}, nil))
+	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello *%s*!", u.Name), false, false)}, nil))
+
+	streak, err := currentStreak(ctx, u.TeamID, uid)
+	if err != nil {
+		return bb, fmt.Errorf("error getting streak for uid %s: %w", uid, err)
+	}
+
+	var streakMsg string
+	if streak > 0 {
+		streakMsg = fmt.Sprintf("Good job! You've reflected daily for the last *%d* days! Keep it up! 🎉", streak)
+	} else {
+		streakMsg = "Time to start reflecting! Keep it up daily, and watch your streak grow!"
+	}
+	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, streakMsg, false, false)}, nil))
+
 	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock("home-start-reflection-action-block", slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false))))
 
 	return bb, nil
+}
+
+func currentStreak(ctx context.Context, tid, uid string) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT GREATEST(0, FLOOR(RAND()*100 - 10))").Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("error getting streak: %w", err)
+	}
+	return n, nil
 }
 
 func printBody(w http.ResponseWriter, r *http.Request) {
