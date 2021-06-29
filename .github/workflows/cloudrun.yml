@@ -40,7 +40,7 @@ jobs:
         image: gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{  github.sha }}
         region: ${{ env.REGION }}
         env_vars: DATABASE_DSN=root@tcp(127.0.0.1:3306)/good-day
-        secrets: SLACK_BOT_TOKEN=slack-bot-token:latest,SLACK_SIGNING_SECRET=slack-signing-secret:latest
+        secrets: SLACK_BOT_TOKEN=slack-bot-token:latest,SLACK_SIGNING_SECRET=slack-signing-secret:latest,PLANETSCALE_ORG=planetscale-org:latest,PLANETSCALE_SERVICE_TOKEN_NAME=planetscale-service-token-name:latest,PLANETSCALE_SERVICE_TOKEN=planetscale-service-token:latest
 
     - name: Show Output
       run: echo ${{ steps.deploy.outputs.url }}
