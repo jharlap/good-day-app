@@ -11,7 +11,10 @@ import (
 	"os"
 	"time"
 
+	_ "embed"
+
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jharlap/good-day-app/heatmap"
 	"github.com/rs/zerolog/log"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -21,9 +24,15 @@ var (
 	sapi          *slack.Client
 	signingSecret string
 	db            *sql.DB
+	heatmapper    *heatmap.Heatmap
 )
 
+//go:embed assets/fonts/Sunflower-Medium.ttf
+var defaultFontFaceBytes []byte
+
 func main() {
+	urlSigningKeyB64 := os.Getenv("URL_SIGNING_KEY_BASE64")
+	baseURL := os.Getenv("BASE_URL")
 	signingSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	sapi = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
 	port := os.Getenv("PORT")
@@ -46,10 +55,12 @@ func main() {
 		db.SetMaxIdleConns(10)
 	}
 
+	heatmapper = heatmap.New(baseURL, urlSigningKeyB64, db, defaultFontFaceBytes)
 	http.HandleFunc("/", printBody)
 	http.Handle("/event", verifySecret(http.HandlerFunc(handleEvent)))
 	http.Handle("/interactive", verifySecret(http.HandlerFunc(handleInteractive)))
 	http.Handle("/slash", verifySecret(http.HandlerFunc(handleSlash)))
+	http.Handle("/heatmap/", heatmapper) // no verifySecret because this is a signed URL
 	http.ListenAndServe(port, nil)
 }
 
@@ -344,7 +355,7 @@ func handleEvent(w http.ResponseWriter, r *http.Request) {
 func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevents.EventsAPIInnerEvent) {
 	switch ev := iev.Data.(type) {
 	case *slackevents.AppHomeOpenedEvent:
-		bb, err := renderHomeView(ctx, ev.User)
+		bb, err := renderHomeView(ctx, ev.View.TeamID, ev.User)
 		if err != nil {
 			log.Debug().Err(err).Str("user", ev.User).Msg("error rendering home view")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -364,7 +375,7 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 	}
 }
 
-func renderHomeView(ctx context.Context, uid string) (slack.Blocks, error) {
+func renderHomeView(ctx context.Context, tid, uid string) (slack.Blocks, error) {
 	var bb slack.Blocks
 
 	u, err := sapi.GetUserInfoContext(ctx, uid)
@@ -374,31 +385,16 @@ func renderHomeView(ctx context.Context, uid string) (slack.Blocks, error) {
 
 	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello *%s*!", u.Name), false, false)}, nil))
 
-	streak, err := currentStreak(ctx, u.TeamID, uid)
+	hmURL, err := heatmapper.URLForTeamAndUser(tid, uid)
 	if err != nil {
-		return bb, fmt.Errorf("error getting streak for uid %s: %w", uid, err)
+		return bb, fmt.Errorf("error getting heatmap URL for tid %s uid %s: %w", tid, uid, err)
 	}
 
-	var streakMsg string
-	if streak > 0 {
-		streakMsg = fmt.Sprintf("Good job! You've reflected daily for the last *%d* days! Keep it up! 🎉", streak)
-	} else {
-		streakMsg = "Time to start reflecting! Keep it up daily, and watch your streak grow!"
-	}
-	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, streakMsg, false, false)}, nil))
+	bb.BlockSet = append(bb.BlockSet, slack.NewImageBlock(hmURL, "Daily feeling at a glance", "", slack.NewTextBlockObject(slack.PlainTextType, "Daily feeling at a glance", false, false)))
 
 	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock("home-start-reflection-action-block", slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false))))
 
 	return bb, nil
-}
-
-func currentStreak(ctx context.Context, tid, uid string) (int64, error) {
-	var n int64
-	err := db.QueryRowContext(ctx, "SELECT GREATEST(0, FLOOR(RAND()*100 - 10))").Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("error getting streak: %w", err)
-	}
-	return n, nil
 }
 
 func printBody(w http.ResponseWriter, r *http.Request) {
