@@ -87,7 +87,7 @@ func (h *Heatmap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	today := time.Now().Format(mysqlDateFormat)
 	startOfYear := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format(mysqlDateFormat)
-	rows, err := h.db.QueryContext(r.Context(), "SELECT dt, FLOOR(RAND()*5)+1 work_day_quality FROM calendar WHERE dt >= ? AND dt <= ? and is_weekday=1 ORDER BY dt ASC", startOfYear, today)
+	rows, err := h.db.QueryContext(r.Context(), "SELECT `date`, work_day_quality FROM reflections WHERE `date` >= ? AND `date` <= ? AND team_id = ? AND user_id = ? ORDER BY `date` ASC", startOfYear, today, rp.TeamID, rp.UserID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Error().Err(err).Msgf("error querying for day quality calendar for uid %s", rp.UserID)
