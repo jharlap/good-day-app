@@ -55,10 +55,11 @@ func New(baseURL string, hmacKey string, db *sql.DB, fontFaceBytes []byte) *Heat
 	}
 }
 
-func (h *Heatmap) URLForTeamAndUser(teamID, userID string) (string, error) {
+func (h *Heatmap) URLForTeamAndUser(teamID, userID string, tz int) (string, error) {
 	p := params{
 		TeamID: teamID,
 		UserID: userID,
+		TZ:     tz,
 		Expiry: time.Now().Add(time.Hour * 24 * 30).UnixNano(),
 	}
 
@@ -85,9 +86,10 @@ func (h *Heatmap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rp = p
 	}
 
+	tzOffset := fmt.Sprintf("%+02d:00", rp.TZ)
 	today := time.Now().Add(time.Hour * 24).Format(mysqlDateFormat)
 	startOfYear := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format(mysqlDateFormat)
-	rows, err := h.db.QueryContext(r.Context(), "SELECT DATE(`date`) dt, LEFT(work_day_quality, 1) FROM reflections WHERE DATE(`date`) >= ? AND DATE(`date`) <= ? AND team_id = ? AND user_id = ?", startOfYear, today, rp.TeamID, rp.UserID)
+	rows, err := h.db.QueryContext(r.Context(), "SELECT DATE(CONVERT_TZ(`date`, '+00:00', ?)) dt, LEFT(work_day_quality, 1) FROM reflections WHERE DATE(`date`) >= ? AND DATE(`date`) <= ? AND team_id = ? AND user_id = ?", tzOffset, startOfYear, today, rp.TeamID, rp.UserID)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Error().Err(err).Msgf("error querying for day quality calendar for uid %s", rp.UserID)
@@ -145,14 +147,19 @@ func (h *Heatmap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type params struct {
 	TeamID string `json:"t"`
 	UserID string `json:"u"`
+	TZ     int    `json:"z"`
 	Expiry int64  `json:"ts"`
 	HMAC   []byte `json:"h"`
 }
 
+func (p params) hmac(key []byte) []byte {
+	mac := hmac.New(sha1.New, key)
+	mac.Write([]byte(fmt.Sprintf("%s:%s:%d:%d", p.TeamID, p.UserID, p.TZ, p.Expiry)))
+	return mac.Sum(nil)
+}
+
 func (h *Heatmap) urlForParams(p params) (string, error) {
-	mac := hmac.New(sha1.New, h.hmacKey)
-	mac.Write([]byte(fmt.Sprintf("%s:%s:%d", p.TeamID, p.UserID, p.Expiry)))
-	p.HMAC = mac.Sum(nil)
+	p.HMAC = p.hmac(h.hmacKey)
 
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -179,10 +186,7 @@ func (h *Heatmap) paramsFromString(s string) (params, error) {
 		return params{}, errExpiredHMAC
 	}
 
-	mac := hmac.New(sha1.New, h.hmacKey)
-	mac.Write([]byte(fmt.Sprintf("%s:%s:%d", p.TeamID, p.UserID, p.Expiry)))
-	hm := mac.Sum(nil)
-
+	hm := p.hmac(h.hmacKey)
 	if !hmac.Equal(hm, p.HMAC) {
 		return params{}, errInvalidHMAC
 	}

@@ -385,7 +385,7 @@ func renderHomeView(ctx context.Context, tid, uid string) (slack.Blocks, error) 
 
 	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello *%s*!", u.Name), false, false)}, nil))
 
-	hmURL, err := heatmapper.URLForTeamAndUser(tid, uid)
+	hmURL, err := heatmapper.URLForTeamAndUser(tid, uid, u.TZOffset/3600)
 	if err != nil {
 		return bb, fmt.Errorf("error getting heatmap URL for tid %s uid %s: %w", tid, uid, err)
 	}
