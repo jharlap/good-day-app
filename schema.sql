@@ -19,3 +19,22 @@ CREATE TABLE `reflections` (
     PRIMARY KEY (`team_id`, `user_id`, `date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- create calendar table
+CREATE TABLE `calendar` (
+    `dt` DATE NOT NULL PRIMARY KEY,
+    `is_weekday` tinyint(1) NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE ints ( i tinyint );
+
+INSERT INTO ints VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+
+INSERT INTO calendar (dt)
+SELECT DATE('2010-01-01') + INTERVAL a.i*10000 + b.i*1000 + c.i*100 + d.i*10 + e.i DAY
+FROM ints a JOIN ints b JOIN ints c JOIN ints d JOIN ints e
+WHERE (a.i*10000 + b.i*1000 + c.i*100 + d.i*10 + e.i) <= 11322
+ORDER BY 1;
+
+UPDATE calendar SET is_weekday = CASE WHEN dayofweek(dt) IN (1,7) THEN 0 ELSE 1 END;
+
+DROP TABLE ints;
