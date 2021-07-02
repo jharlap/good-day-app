@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+
+	"github.com/slack-go/slack"
 )
 
 type Reflection struct {
@@ -30,7 +32,7 @@ func (r Reflection) String() string {
 	buf := new(bytes.Buffer)
 	fmt.Fprintf(buf, "Date (UTC): %s\n", r.Date)
 	for _, q := range Questions {
-		fmt.Fprintf(buf, "%s: %s\n", q.Text, q.Options.ValueFor(r.ValueForQuestion(q.Field)))
+		fmt.Fprintf(buf, "%s: *%s*\n", q.Text, q.Options.ValueFor(r.ValueForQuestion(q.Field)))
 	}
 	return buf.String()
 }
@@ -51,9 +53,30 @@ type Question struct {
 	Options OptionSet
 }
 
+func (q Question) SlackBlock() *slack.InputBlock {
+	return slack.NewInputBlock(
+		q.Field,
+		slack.NewTextBlockObject(slack.PlainTextType, q.Text, false, false),
+		q.Options.SlackElement(),
+	)
+}
+
 type OptionSet struct {
 	Placeholder string
 	Options     []Option
+}
+
+func (o OptionSet) SlackElement() *slack.SelectBlockElement {
+	var opts []*slack.OptionBlockObject
+	for _, opt := range o.Options {
+		opts = append(opts, opt.SlackOption())
+	}
+	return slack.NewOptionsSelectBlockElement(
+		"static_select",
+		slack.NewTextBlockObject(slack.PlainTextType, o.Placeholder, false, false),
+		"select",
+		opts...,
+	)
 }
 
 func (o OptionSet) ValueFor(code string) string {
@@ -68,6 +91,14 @@ func (o OptionSet) ValueFor(code string) string {
 type Option struct {
 	Text string
 	Code string
+}
+
+func (o Option) SlackOption() *slack.OptionBlockObject {
+	return slack.NewOptionBlockObject(
+		o.Code,
+		slack.NewTextBlockObject(slack.PlainTextType, o.Text, false, false),
+		nil,
+	)
 }
 
 var (
@@ -142,8 +173,8 @@ var (
 		{Text: "My day was stressful", Field: "stressful_amount", Options: AmountOfDayOptions},
 		{Text: "I took breaks today", Field: "breaks_amount", Options: AmountOfDayOptions},
 		{Text: "How many meetings did you have today?", Field: "meeting_number", Options: NumberOptions},
-		{Text: "Today, I felt most productive:", Field: "most_productive_time", Options: TimeOptions},
-		{Text: "Today, I felt least productive:", Field: "least_productive_time", Options: TimeOptions},
+		{Text: "Today, I felt most productive", Field: "most_productive_time", Options: TimeOptions},
+		{Text: "Today, I felt least productive", Field: "least_productive_time", Options: TimeOptions},
 	}
 )
 
