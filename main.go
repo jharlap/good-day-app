@@ -170,11 +170,10 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 		}
 		err := saveReflection(r)
 		if err != nil {
-			reportErrorToUser(err, ic.Team.ID, ic.User.ID, fmt.Sprintf("Sorry, I hit a snag and couldn't save your reflection. To make it easier to save, here's your answers: %+v", r))
+			reportErrorToUser(err, ic.Team.ID, ic.User.ID, fmt.Sprintf("Sorry, I hit a snag and couldn't save your reflection. To make it easier to save, here's your answers: %s", r))
 			log.Error().Err(err).Msg("error saving reflection")
+			return
 		}
-		//} else {
-		//log.Info().Str("body", string(body)).Msg("unexpected interaction")
 	}
 }
 

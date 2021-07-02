@@ -6,6 +6,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestReflectionValueForQuestion(t *testing.T) {
+	tcs := []struct {
+		r     Reflection
+		field string
+		ex    string
+	}{
+		{Reflection{WorkDayQuality: NumberPrefixedEnum("1-q"), WorkDayFeeling: NumberPrefixedEnum("2-f")}, "work_day_quality", "1-q"},
+		{Reflection{WorkDayQuality: NumberPrefixedEnum("1-q"), WorkDayFeeling: NumberPrefixedEnum("2-f")}, "work_day_feeling", "2-f"},
+		{Reflection{WorkDayQuality: NumberPrefixedEnum("1-q")}, "other_field", ""},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.field, func(t *testing.T) {
+			v := tc.r.ValueForQuestion(tc.field)
+			require.Equal(t, tc.ex, v, "value is wrong")
+		})
+	}
+}
+
 func TestNumberPrefixedEnumScan(t *testing.T) {
 	tcs := []string{"", "a", "2", "5-ahe", "10-sd"}
 
