@@ -3,18 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	_ "embed"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jharlap/good-day-app/heatmap"
+	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog/log"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -23,7 +25,7 @@ import (
 var (
 	sapi          *slack.Client
 	signingSecret string
-	db            *sql.DB
+	db            *sqlx.DB
 	heatmapper    *heatmap.Heatmap
 )
 
@@ -45,7 +47,7 @@ func main() {
 	{
 		dsn := os.Getenv("DATABASE_DSN")
 		fmt.Println("connecting to db with dsn:", dsn)
-		c, err := sql.Open("mysql", dsn)
+		c, err := sqlx.Open("mysql", dsn)
 		if err != nil {
 			log.Fatal().Err(err).Msg("error connecting to database")
 		}
@@ -136,6 +138,8 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 
 	if ic.Type == slack.InteractionTypeBlockActions && len(ic.ActionCallback.BlockActions) > 0 && ic.ActionCallback.BlockActions[0].ActionID == homeButtonStartReflection {
 		startReflectionDialog(ic.TriggerID)
+	} else if ic.Type == slack.InteractionTypeBlockActions && len(ic.ActionCallback.BlockActions) > 0 && ic.ActionCallback.BlockActions[0].ActionID == homeButtonDownloadData {
+		sendDataDownload(ic.Team.ID, ic.User.ID)
 	} else if ic.Type == slack.InteractionTypeViewSubmission && ic.View.CallbackID == reflectionModalCallbackID {
 		/*
 			for k, v := range ic.View.State.Values {
@@ -392,9 +396,118 @@ func renderHomeView(ctx context.Context, tid, uid string) (slack.Blocks, error) 
 
 	bb.BlockSet = append(bb.BlockSet, slack.NewImageBlock(hmURL, "Daily feeling at a glance", "", slack.NewTextBlockObject(slack.PlainTextType, "Daily feeling at a glance", false, false)))
 
-	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock("home-start-reflection-action-block", slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false))))
+	bb.BlockSet = append(bb.BlockSet, slack.NewActionBlock(
+		"home-start-reflection-action-block",
+		slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false)),
+		slack.NewButtonBlockElement(homeButtonDownloadData, "download-data-btn", slack.NewTextBlockObject(slack.PlainTextType, "Download Reflections Data", false, false)),
+	))
 
 	return bb, nil
+}
+
+func userReflectionsCSV(tid, uid string) (string, error) {
+	rows, err := db.Queryx("SELECT * FROM reflections WHERE team_id = ? AND user_id = ?", tid, uid)
+	if err != nil {
+		return "", err
+	}
+
+	isFirstRow := true
+	buf := new(bytes.Buffer)
+	cw := csv.NewWriter(buf)
+	for rows.Next() {
+		if isFirstRow {
+			nn, err := rows.Columns()
+			if err != nil {
+				return "", fmt.Errorf("error reading column metadata: %w", err)
+			}
+			cw.Write(nn)
+			isFirstRow = false
+		}
+
+		r, err := rows.SliceScan()
+		if err != nil {
+			return "", fmt.Errorf("error scanning db row: %w", err)
+		}
+
+		ss, err := stringSlice(r)
+		if err != nil {
+			return "", fmt.Errorf("error converting db row: %w", err)
+		}
+
+		err = cw.Write(ss)
+		if err != nil {
+			return "", fmt.Errorf("error writing csv row: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("error reading csv rows: %w", err)
+	}
+
+	// if no rows, insert data to indicate an empty file
+	if isFirstRow {
+		return "No reflections found.", nil
+	}
+
+	cw.Flush()
+	return buf.String(), nil
+}
+
+func sendDataDownload(tid, uid string) {
+	log.Info().Str("tid", tid).Str("uid", uid).Msg("sendDataDownload")
+	content, err := userReflectionsCSV(tid, uid)
+	if err != nil {
+		reportErrorToUser(err, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
+		return
+	}
+
+	fn := fmt.Sprintf("reflections_%s_%d.csv", uid, time.Now().Unix())
+	_, err = sapi.UploadFile(slack.FileUploadParameters{
+		Title:    fn,
+		Filename: fn,
+		Filetype: "csv",
+		Content:  content,
+		Channels: []string{uid},
+	})
+	if err != nil {
+		reportErrorToUser(err, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
+		return
+	}
+
+	_, _, err = sapi.PostMessage(
+		uid,
+		slack.MsgOptionText("All your reflections to date are in this file. Please note that date columns are in UTC timezone.", false),
+	)
+	if err != nil {
+		log.Error().Err(err).Msgf("error posting file explanation error message to %s", uid)
+	}
+}
+
+func stringSlice(ii []interface{}) ([]string, error) {
+	var ss []string
+	for _, i := range ii {
+		switch v := i.(type) {
+		case string:
+			ss = append(ss, v)
+		case uint8:
+			ss = append(ss, strconv.FormatUint(uint64(v), 10))
+		case []uint8:
+			ss = append(ss, string([]byte(v)))
+		default:
+			return nil, fmt.Errorf("error converting row value of type %T to string: %+v\n", v, v)
+		}
+	}
+	return ss, nil
+}
+
+func reportErrorToUser(err error, uid, msg string) {
+	log.Error().Err(err).Str("uid", uid).Msg("")
+	_, _, err = sapi.PostMessage(
+		uid,
+		slack.MsgOptionText(msg, false),
+	)
+	if err != nil {
+		log.Error().Err(err).Msgf("error posting error report to %s", uid)
+	}
 }
 
 func printBody(w http.ResponseWriter, r *http.Request) {
@@ -404,5 +517,6 @@ func printBody(w http.ResponseWriter, r *http.Request) {
 
 const (
 	homeButtonStartReflection = "start-reflection-action"
+	homeButtonDownloadData    = "download-data-action"
 	reflectionModalCallbackID = "reflection-modal-callback-id"
 )
