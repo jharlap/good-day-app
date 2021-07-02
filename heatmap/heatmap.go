@@ -3,7 +3,6 @@ package heatmap
 import (
 	"crypto/hmac"
 	"crypto/sha1"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/nikolaydubina/calendarheatmap/charts"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/image/font"
@@ -25,10 +25,10 @@ type Heatmap struct {
 	defaultColorScale charts.BasicColorScale
 	defaultFontFace   font.Face
 	hmacKey           []byte
-	db                *sql.DB
+	db                *sqlx.DB
 }
 
-func New(baseURL string, hmacKey string, db *sql.DB, fontFaceBytes []byte) *Heatmap {
+func New(baseURL string, hmacKey string, db *sqlx.DB, fontFaceBytes []byte) *Heatmap {
 	fontFace, err := charts.LoadFontFace(fontFaceBytes)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error loading font face")
