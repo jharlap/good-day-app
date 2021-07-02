@@ -18,8 +18,6 @@ import (
 	"golang.org/x/image/font"
 )
 
-const mysqlDateFormat = "2006-01-02"
-
 type Heatmap struct {
 	baseURL           string
 	defaultColorScale charts.BasicColorScale
@@ -198,3 +196,5 @@ var (
 	errInvalidHMAC = errors.New("invalid signature")
 	errExpiredHMAC = errors.New("expired signature")
 )
+
+const mysqlDateFormat = "2006-01-02"
