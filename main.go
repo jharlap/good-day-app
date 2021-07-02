@@ -170,6 +170,7 @@ func handleInteractive(w http.ResponseWriter, r *http.Request) {
 		}
 		err := saveReflection(r)
 		if err != nil {
+			reportErrorToUser(err, ic.Team.ID, ic.User.ID, fmt.Sprintf("Sorry, I hit a snag and couldn't save your reflection. To make it easier to save, here's your answers: %+v", r))
 			log.Error().Err(err).Msg("error saving reflection")
 		}
 		//} else {
@@ -369,7 +370,7 @@ func handleInnerEvent(ctx context.Context, w http.ResponseWriter, iev slackevent
 			Type:   slack.VTHomeTab,
 			Blocks: bb,
 		}
-		r, err := sapi.PublishViewContext(ctx, ev.User, v, ev.View.Hash)
+		r, err := sapi.PublishViewContext(ctx, ev.User, v, "")
 		if err != nil {
 			log.Debug().Err(err).Str("user", ev.User).Msgf("error publishing home view: %+v", r.ResponseMetadata.Messages)
 		}
@@ -456,7 +457,7 @@ func sendDataDownload(tid, uid string) {
 	log.Info().Str("tid", tid).Str("uid", uid).Msg("sendDataDownload")
 	content, err := userReflectionsCSV(tid, uid)
 	if err != nil {
-		reportErrorToUser(err, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
+		reportErrorToUser(err, tid, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
 		return
 	}
 
@@ -469,7 +470,7 @@ func sendDataDownload(tid, uid string) {
 		Channels: []string{uid},
 	})
 	if err != nil {
-		reportErrorToUser(err, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
+		reportErrorToUser(err, tid, uid, "Sorry, there was an error uploading your data to Slack - please try again in a few minutes.")
 		return
 	}
 
@@ -499,8 +500,8 @@ func stringSlice(ii []interface{}) ([]string, error) {
 	return ss, nil
 }
 
-func reportErrorToUser(err error, uid, msg string) {
-	log.Error().Err(err).Str("uid", uid).Msg("")
+func reportErrorToUser(err error, tid, uid, msg string) {
+	log.Error().Err(err).Str("tid", tid).Str("uid", uid).Msg("")
 	_, _, err = sapi.PostMessage(
 		uid,
 		slack.MsgOptionText(msg, false),
