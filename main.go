@@ -158,19 +158,19 @@ func handleReflectionModalCallback(ic slack.InteractionCallback) {
 		TeamID:                ic.Team.ID,
 		UserID:                ic.User.ID,
 		Date:                  time.Now().Format("2006-01-02 15:04:05"),
-		WorkDayQuality:        NumberPrefixedEnum(ic.View.State.Values["work_day_quality"]["select"].SelectedOption.Value),
-		WorkOtherPeopleAmount: NumberPrefixedEnum(ic.View.State.Values["work_other_people_amount"]["select"].SelectedOption.Value),
-		HelpOtherPeopleAmount: NumberPrefixedEnum(ic.View.State.Values["help_other_people_amount"]["select"].SelectedOption.Value),
-		InterruptedAmount:     NumberPrefixedEnum(ic.View.State.Values["interrupted_amount"]["select"].SelectedOption.Value),
-		ProgressGoalsAmount:   NumberPrefixedEnum(ic.View.State.Values["progress_goals_amount"]["select"].SelectedOption.Value),
-		QualityWorkAmount:     NumberPrefixedEnum(ic.View.State.Values["quality_work_amount"]["select"].SelectedOption.Value),
-		LotOfWorkAmount:       NumberPrefixedEnum(ic.View.State.Values["lot_of_work_amount"]["select"].SelectedOption.Value),
-		WorkDayFeeling:        NumberPrefixedEnum(ic.View.State.Values["work_day_feeling"]["select"].SelectedOption.Value),
-		StressfulAmount:       NumberPrefixedEnum(ic.View.State.Values["stressful_amount"]["select"].SelectedOption.Value),
-		BreaksAmount:          NumberPrefixedEnum(ic.View.State.Values["breaks_amount"]["select"].SelectedOption.Value),
-		MeetingNumber:         NumberPrefixedEnum(ic.View.State.Values["meeting_number"]["select"].SelectedOption.Value),
-		MostProductiveTime:    NumberPrefixedEnum(ic.View.State.Values["most_productive_time"]["select"].SelectedOption.Value),
-		LeastProductiveTime:   NumberPrefixedEnum(ic.View.State.Values["least_productive_time"]["select"].SelectedOption.Value),
+		WorkDayQuality:        selectedOptionValue(ic, "work_day_quality"),
+		WorkOtherPeopleAmount: selectedOptionValue(ic, "work_other_people_amount"),
+		HelpOtherPeopleAmount: selectedOptionValue(ic, "help_other_people_amount"),
+		InterruptedAmount:     selectedOptionValue(ic, "interrupted_amount"),
+		ProgressGoalsAmount:   selectedOptionValue(ic, "progress_goals_amount"),
+		QualityWorkAmount:     selectedOptionValue(ic, "quality_work_amount"),
+		LotOfWorkAmount:       selectedOptionValue(ic, "lot_of_work_amount"),
+		WorkDayFeeling:        selectedOptionValue(ic, "work_day_feeling"),
+		StressfulAmount:       selectedOptionValue(ic, "stressful_amount"),
+		BreaksAmount:          selectedOptionValue(ic, "breaks_amount"),
+		MeetingNumber:         selectedOptionValue(ic, "meeting_number"),
+		MostProductiveTime:    selectedOptionValue(ic, "most_productive_time"),
+		LeastProductiveTime:   selectedOptionValue(ic, "least_productive_time"),
 	}
 	err := saveReflection(r)
 	if err != nil {
@@ -180,6 +180,10 @@ func handleReflectionModalCallback(ic slack.InteractionCallback) {
 	}
 
 	messageUser(ic.Team.ID, ic.User.ID, fmt.Sprintf("Well done! I saved your reflection - here is what you said:\n%s", r))
+}
+
+func selectedOptionValue(ic slack.InteractionCallback, field string) NumberPrefixedEnum {
+	return NumberPrefixedEnum(ic.View.State.Values[field]["select"].SelectedOption.Value)
 }
 
 func saveReflection(r Reflection) error {
