@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jharlap/good-day-app/heatmap"
+	"github.com/jharlap/good-day-app/reflection"
+	"github.com/jharlap/good-day-app/report"
+	"github.com/jharlap/good-day-app/urlsigner"
 	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog/log"
 	"github.com/slack-go/slack"
@@ -23,10 +27,11 @@ import (
 )
 
 var (
-	sapi          *slack.Client
-	signingSecret string
-	db            *sqlx.DB
-	heatmapper    *heatmap.Heatmap
+	sapi             *slack.Client
+	signingSecret    string
+	db               *sqlx.DB
+	heatmapper       *heatmap.Heatmap
+	detailedReporter *report.InterruptionsMeetingsReport
 )
 
 //go:embed assets/fonts/Sunflower-Medium.ttf
@@ -35,6 +40,8 @@ var defaultFontFaceBytes []byte
 func main() {
 	urlSigningKeyB64 := os.Getenv("URL_SIGNING_KEY_BASE64")
 	baseURL := os.Getenv("BASE_URL")
+	chartRendererURL := os.Getenv("RENDER_URL")
+	chartRendererCredsFile := os.Getenv("RENDER_CREDS_FILE")
 	signingSecret = os.Getenv("SLACK_SIGNING_SECRET")
 	sapi = slack.New(os.Getenv("SLACK_BOT_TOKEN"))
 	port := os.Getenv("PORT")
@@ -44,8 +51,18 @@ func main() {
 		port = ":3000"
 	}
 
+	var signer *urlsigner.Engine
+	{
+		key, err := base64.StdEncoding.DecodeString(urlSigningKeyB64)
+		if err != nil {
+			log.Fatal().Err(err).Msg("error decoding url signing key")
+		}
+		signer = urlsigner.New(key)
+	}
+
 	{
 		dsn := os.Getenv("DATABASE_DSN")
+		dsn = dsn + "?parseTime=true"
 		fmt.Println("connecting to db with dsn:", dsn)
 		c, err := sqlx.Open("mysql", dsn)
 		if err != nil {
@@ -57,12 +74,15 @@ func main() {
 		db.SetMaxIdleConns(10)
 	}
 
-	heatmapper = heatmap.New(baseURL, urlSigningKeyB64, db, defaultFontFaceBytes)
+	heatmapper = heatmap.New(baseURL+"/heatmap/", signer, db, defaultFontFaceBytes)
+	detailedReporter = report.New(baseURL+"/report/", signer, db, chartRendererURL, chartRendererCredsFile)
+
 	http.HandleFunc("/", printBody)
 	http.Handle("/event", verifySecret(http.HandlerFunc(handleEvent)))
 	http.Handle("/interactive", verifySecret(http.HandlerFunc(handleInteractive)))
 	http.Handle("/slash", verifySecret(http.HandlerFunc(handleSlash)))
-	http.Handle("/heatmap/", heatmapper) // no verifySecret because this is a signed URL
+	http.Handle("/heatmap/", heatmapper)      // no verifySecret because this is a signed URL
+	http.Handle("/report/", detailedReporter) // no verifySecret because this is a signed URL
 	http.ListenAndServe(port, nil)
 }
 
@@ -154,10 +174,10 @@ func handleReflectionModalCallback(ic slack.InteractionCallback) {
 			}
 		}
 	*/
-	r := Reflection{
+	r := reflection.Reflection{
 		TeamID:                ic.Team.ID,
 		UserID:                ic.User.ID,
-		Date:                  time.Now().Format("2006-01-02 15:04:05"),
+		Date:                  time.Now(),
 		WorkDayQuality:        selectedOptionValue(ic, "work_day_quality"),
 		WorkOtherPeopleAmount: selectedOptionValue(ic, "work_other_people_amount"),
 		HelpOtherPeopleAmount: selectedOptionValue(ic, "help_other_people_amount"),
@@ -182,11 +202,11 @@ func handleReflectionModalCallback(ic slack.InteractionCallback) {
 	messageUser(ic.Team.ID, ic.User.ID, fmt.Sprintf("Well done! I saved your reflection - here is what you said:\n%s", r))
 }
 
-func selectedOptionValue(ic slack.InteractionCallback, field string) NumberPrefixedEnum {
-	return NumberPrefixedEnum(ic.View.State.Values[field]["select"].SelectedOption.Value)
+func selectedOptionValue(ic slack.InteractionCallback, field string) reflection.NumberPrefixedEnum {
+	return reflection.NumberPrefixedEnum(ic.View.State.Values[field]["select"].SelectedOption.Value)
 }
 
-func saveReflection(r Reflection) error {
+func saveReflection(r reflection.Reflection) error {
 	_, err := db.Exec("INSERT INTO reflections SET team_id=?, user_id=?, date=?, work_day_quality=?, work_other_people_amount=?, help_other_people_amount=?, interrupted_amount=?, progress_goals_amount=?, quality_work_amount=?, lot_of_work_amount=?, work_day_feeling=?, stressful_amount=?, breaks_amount=?, meeting_number=?, most_productive_time=?, least_productive_time=?", r.TeamID, r.UserID, r.Date, r.WorkDayQuality, r.WorkOtherPeopleAmount, r.HelpOtherPeopleAmount, r.InterruptedAmount, r.ProgressGoalsAmount, r.QualityWorkAmount, r.LotOfWorkAmount, r.WorkDayFeeling, r.StressfulAmount, r.BreaksAmount, r.MeetingNumber, r.MostProductiveTime, r.LeastProductiveTime)
 	if err != nil {
 		return fmt.Errorf("error saving reflection: %w", err)
@@ -205,7 +225,7 @@ func generateReflectionModal() slack.ModalViewRequest {
 	headerSection := slack.NewSectionBlock(headerText, nil, nil)
 
 	bb := []slack.Block{headerSection}
-	for _, q := range Questions {
+	for _, q := range reflection.Questions {
 		bb = append(bb, q.SlackBlock())
 	}
 
@@ -297,8 +317,8 @@ func renderHomeView(ctx context.Context, tid, uid string) (slack.Blocks, error) 
 
 	bb.BlockSet = append(bb.BlockSet, slack.NewSectionBlock(nil, []*slack.TextBlockObject{slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("hello *%s*!", u.Name), false, false)}, nil))
 
-	hmURL, err := heatmapper.URLForTeamAndUser(tid, uid, u.TZOffset/3600)
-	if err != nil {
+	hmURL := heatmapper.URLForTeamAndUser(tid, uid, u.TZOffset/3600)
+	if len(hmURL) == 0 {
 		return bb, fmt.Errorf("error getting heatmap URL for tid %s uid %s: %w", tid, uid, err)
 	}
 
@@ -309,6 +329,13 @@ func renderHomeView(ctx context.Context, tid, uid string) (slack.Blocks, error) 
 		slack.NewButtonBlockElement(homeButtonStartReflection, "start-today-btn", slack.NewTextBlockObject(slack.PlainTextType, "Reflect on Today", false, false)),
 		slack.NewButtonBlockElement(homeButtonDownloadData, "download-data-btn", slack.NewTextBlockObject(slack.PlainTextType, "Download Reflections Data", false, false)),
 	))
+
+	repURL := detailedReporter.URLForTeamAndUser(tid, uid, u.TZOffset/3600)
+	if len(repURL) == 0 {
+		return bb, fmt.Errorf("error getting detailed report URL for tid %s uid %s: %w", tid, uid, err)
+	}
+
+	bb.BlockSet = append(bb.BlockSet, slack.NewImageBlock(repURL, "Interruptions and meetings with good days overlay", "", slack.NewTextBlockObject(slack.PlainTextType, "Interruptions and meetings with good days overlay", false, false)))
 
 	return bb, nil
 }
@@ -400,6 +427,8 @@ func stringSlice(ii []interface{}) ([]string, error) {
 			ss = append(ss, strconv.FormatUint(uint64(v), 10))
 		case []uint8:
 			ss = append(ss, string([]byte(v)))
+		case time.Time:
+			ss = append(ss, v.Format(time.RFC3339))
 		default:
 			return nil, fmt.Errorf("error converting row value of type %T to string: %+v\n", v, v)
 		}

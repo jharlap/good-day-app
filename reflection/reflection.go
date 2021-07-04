@@ -1,10 +1,11 @@
-package main
+package reflection
 
 import (
 	"bytes"
 	"fmt"
 	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/slack-go/slack"
 )
@@ -12,7 +13,7 @@ import (
 type Reflection struct {
 	TeamID                string             `db:"team_id"`
 	UserID                string             `db:"user_id"`
-	Date                  string             `db:"date"`
+	Date                  time.Time          `db:"date"`
 	WorkDayQuality        NumberPrefixedEnum `db:"work_day_quality"`
 	WorkOtherPeopleAmount NumberPrefixedEnum `db:"work_other_people_amount"`
 	HelpOtherPeopleAmount NumberPrefixedEnum `db:"help_other_people_amount"`
@@ -26,6 +27,8 @@ type Reflection struct {
 	MeetingNumber         NumberPrefixedEnum `db:"meeting_number"`
 	MostProductiveTime    NumberPrefixedEnum `db:"most_productive_time"`
 	LeastProductiveTime   NumberPrefixedEnum `db:"least_productive_time"`
+
+	CreatedAt time.Time `db:"created_at"`
 }
 
 func (r Reflection) String() string {
@@ -181,12 +184,16 @@ var (
 type NumberPrefixedEnum string
 
 func (e *NumberPrefixedEnum) Scan(src interface{}) error {
-	v, ok := src.(string)
-	if !ok {
-		return fmt.Errorf("error scanning quality %+v", src)
-	}
+	switch v := src.(type) {
+	case string:
+		*e = NumberPrefixedEnum(v)
 
-	*e = NumberPrefixedEnum(v)
+	case []uint8:
+		*e = NumberPrefixedEnum(string(v))
+
+	default:
+		return fmt.Errorf("error scanning %s of type %T", src, src)
+	}
 	return nil
 }
 
