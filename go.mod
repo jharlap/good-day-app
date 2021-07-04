@@ -10,4 +10,6 @@ require (
 	github.com/slack-go/slack v0.9.1
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/image v0.0.0-20210628002857-a66eb6448b8d
+	golang.org/x/oauth2 v0.0.0-20210628180205-a41e5a781914
+	google.golang.org/api v0.50.0
 )
